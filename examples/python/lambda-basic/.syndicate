@@ -1,0 +1,6 @@
+name: lambda-basic
+build_projects_mapping:
+  python: lambda_example
+lambdas:
+  lambda_example:
+    runtime: python

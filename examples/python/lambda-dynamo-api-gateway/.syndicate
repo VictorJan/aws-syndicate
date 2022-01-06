@@ -1,0 +1,6 @@
+name: lambda-dynamo-api-gateway
+build_projects_mapping:
+  python: lambda_example
+lambdas:
+  put_dynamodb_item:
+    runtime: python

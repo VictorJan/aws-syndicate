@@ -1,0 +1,10 @@
+name: demo
+build_projects_mapping:
+  python: sample-python-project
+lambdas:
+  api-handler:
+    runtime: python
+  job-processor:
+    runtime: python
+  job-validator:
+    runtime: python
