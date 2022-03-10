@@ -14,6 +14,7 @@
     limitations under the License.
 """
 import time
+from pathlib import Path
 
 from botocore.exceptions import ClientError
 
@@ -26,6 +27,8 @@ from syndicate.core.resources.base_resource import BaseResource
 from syndicate.core.resources.helper import (build_description_obj,
                                              validate_params,
                                              assert_required_params)
+from syndicate.core.build.helper import resolve_all_bundles_directory
+
 
 PROVISIONED_CONCURRENCY = 'provisioned_concurrency'
 
@@ -193,6 +196,7 @@ class LambdaResource(BaseResource):
     @unpack_kwargs
     @retry
     def _create_lambda_from_meta(self, name, meta):
+        from syndicate.core import CONN
         _LOG.debug('Creating lambda %s', name)
         req_params = ['iam_role_name', 'runtime', 'memory', 'timeout',
                       'func_name']
@@ -239,26 +243,32 @@ class LambdaResource(BaseResource):
                         'due to layer absence!'.format(layer_name, name))
                 lambda_layers_arns.append(layer_arn)
 
-        self.lambda_conn.create_lambda(
-            lambda_name=name,
-            func_name=meta['func_name'],
-            role=role_arn,
-            runtime=meta['runtime'].lower(),
-            memory=meta['memory'],
-            timeout=meta['timeout'],
-            s3_bucket=self.deploy_target_bucket,
-            s3_key=key,
-            env_vars=meta.get('env_variables'),
-            vpc_sub_nets=meta.get('subnet_ids'),
-            vpc_security_group=meta.get('security_group_ids'),
-            dl_target_arn=dl_target_arn,
-            tracing_mode=meta.get('tracing_mode'),
-            publish_version=publish_version,
-            layers=lambda_layers_arns
-        )
+        with open(Path(resolve_all_bundles_directory(), key), 'rb') as file:
+            artifact_data = file.read()
+        regions = meta.get('additional_regions', [])
+        for connection in [self.lambda_conn] + [CONN.lambda_conn(region)
+                                                for region in regions]:
+            connection.create_lambda(
+                lambda_name=name,
+                func_name=meta['func_name'],
+                role=role_arn,
+                runtime=meta['runtime'].lower(),
+                memory=meta['memory'],
+                timeout=meta['timeout'],
+                zip_file=artifact_data,
+                s3_bucket=self.deploy_target_bucket,
+                s3_key=key,
+                env_vars=meta.get('env_variables'),
+                vpc_sub_nets=meta.get('subnet_ids'),
+                vpc_security_group=meta.get('security_group_ids'),
+                dl_target_arn=dl_target_arn,
+                tracing_mode=meta.get('tracing_mode'),
+                publish_version=publish_version,
+                layers=lambda_layers_arns
+            )
         _LOG.debug('Lambda created %s', name)
         # AWS sometimes returns None after function creation, needs for stability
-        time.sleep(10)
+        time.sleep(5)
 
         log_group_name = name
         retention = meta.get('logs_expiration')
@@ -302,6 +312,7 @@ class LambdaResource(BaseResource):
     @exit_on_exception
     @unpack_kwargs
     def _update_lambda(self, name, meta, context):
+        from syndicate.core import CONN
         _LOG.info('Updating lambda: {0}'.format(name))
         req_params = ['runtime', 'memory', 'timeout', 'func_name']
 
@@ -319,11 +330,17 @@ class LambdaResource(BaseResource):
 
         publish_version = meta.get('publish_version', False)
 
-        self.lambda_conn.update_code_source(
-            lambda_name=name,
-            s3_bucket=self.deploy_target_bucket,
-            s3_key=key,
-            publish_version=publish_version)
+        with open(Path(resolve_all_bundles_directory(), key), 'rb') as file:
+            artifact_data = file.read()
+        regions = meta.get('additional_regions', [])
+        for connection in [self.lambda_conn] + [CONN.lambda_conn(region)
+                                                for region in regions]:
+            connection.update_code_source(
+                lambda_name=name,
+                zip_file=artifact_data,
+                s3_bucket=self.deploy_target_bucket,
+                s3_key=key,
+                publish_version=publish_version)
 
         role = meta.get('iam_arn_role')
         handler = meta.get('func_name')
@@ -359,7 +376,7 @@ class LambdaResource(BaseResource):
 
         # AWS sometimes returns None after function creation, needs for
         # stability
-        time.sleep(10)
+        time.sleep(5)
         response = self.lambda_conn.get_function(name)
         _LOG.debug(f'Lambda describe result: {response}')
         code_sha_256 = response['Configuration']['CodeSha256']
@@ -723,14 +740,20 @@ class LambdaResource(BaseResource):
     @unpack_kwargs
     @retry
     def _remove_lambda(self, arn, config):
+        from syndicate.core import CONN
         lambda_name = config['resource_name']
         try:
-            self.lambda_conn.delete_lambda(lambda_name)
+            regions = config['resource_meta'].get('additional_regions', [])
+            for connection in [self.lambda_conn] + [CONN.lambda_conn(region)
+                                                    for region in regions]:
+                connection.delete_lambda(lambda_name)
             self.lambda_conn.remove_trigger(lambda_name)
-            group_names = self.cw_logs_conn.get_log_group_names()
-            for each in group_names:
-                if lambda_name == each.split('/')[-1]:
-                    self.cw_logs_conn.delete_log_group_name(each)
+            for connection in [self.cw_logs_conn] + [CONN.cw_logs(region)
+                                                     for region in regions]:
+                group_names = connection.get_log_group_names()
+                for each in group_names:
+                    if lambda_name == each.split('/')[-1]:
+                        connection.delete_log_group_name(each)
             _LOG.info('Lambda %s was removed.', lambda_name)
         except ClientError as e:
             if e.response['Error']['Code'] == 'ResourceNotFoundException':

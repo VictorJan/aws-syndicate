@@ -50,8 +50,9 @@ class LambdaConnection(object):
         _LOG.debug('Opened new Lambda connection.')
 
     def create_lambda(self, lambda_name, func_name,
-                      role, s3_bucket, s3_key, runtime='python3.7', memory=128,
-                      timeout=300, vpc_sub_nets=None, vpc_security_group=None,
+                      role, zip_file=None, s3_bucket=None, s3_key=None,
+                      runtime='python3.7', memory=128, timeout=300,
+                      vpc_sub_nets=None, vpc_security_group=None,
                       env_vars=None, dl_target_arn=None, tracing_mode=None,
                       publish_version=False, layers=None):
         """ Create Lambda method.
@@ -61,6 +62,8 @@ class LambdaConnection(object):
         :param func_name: name of the entry point function
         :type role: str
         :param role: aws arn of role
+        :type zip_file: binary opened zip archive
+        :param zip_file: lambda's artifacts archive
         :type s3_bucket: str
         :type s3_key: str
         :type runtime: str
@@ -73,10 +76,15 @@ class LambdaConnection(object):
         :type layers: list
         :return: response
         """
+        code = {}
+        if zip_file:
+            code.update({'ZipFile': zip_file})
+        else:
+            code.update({'S3Bucket': s3_bucket, 'S3Key': s3_key})
         layers = [] if layers is None else layers
         params = dict(FunctionName=lambda_name, Runtime=runtime,
                       Role=role, Handler=func_name,
-                      Code={'S3Bucket': s3_bucket, 'S3Key': s3_key},
+                      Code=code,
                       Description=' ', Timeout=timeout, MemorySize=memory,
                       Publish=publish_version, Layers=layers)
         if env_vars:
@@ -283,19 +291,22 @@ class LambdaConnection(object):
             params['SourceArn'] = source_arn
         self.client.add_permission(**params)
 
-    def update_code_source(self, lambda_name, s3_bucket, s3_key,
-                           publish_version):
+    def update_code_source(self, lambda_name, publish_version,
+                           zip_file=None, s3_bucket=None, s3_key=None):
         """ Update code source (s3 bucket + file link) for specified lambda.
 
         :type lambda_name: str
         :type s3_bucket: str
         :type s3_key: str
         :type publish_version: bool
+        :type zip_file: binary
         """
-        self.client.update_function_code(FunctionName=lambda_name,
-                                         S3Bucket=s3_bucket,
-                                         S3Key=s3_key,
-                                         Publish=publish_version)
+        params = dict(FunctionName=lambda_name, Publish=publish_version)
+        if zip_file:
+            params.update({'ZipFile': zip_file})
+        else:
+            params.update({'S3Bucket': s3_bucket, 'S3Key': s3_key})
+        self.client.update_function_code(**params)
 
     def update_event_source(self, lambda_name, batch_size):
         """ Update batch size of lambda event source stream.
